@@ -1,16 +1,20 @@
-# Women's Wardrobe
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+</div>
 
-A full-stack e-commerce platform for women's fashion, built with React and Firebase. Features secure user authentication, JazzCash payment integration with server-side HMAC verification via Cloud Functions, and automated order tracking through Google Sheets.
+# Run and deploy your AI Studio app
 
-## Tech Stack
+This contains everything you need to run your app locally.
 
-- **Frontend:** React
-- **Backend / Database:** Firebase (Firestore, Cloud Functions)
-- **Payments:** JazzCash Hosted Checkout
-- **Order Tracking:** Google Sheets (via Google Apps Script Web App middleware)
+View your app in AI Studio: https://ai.studio/apps/1cb90188-7cb8-43bc-9c6b-d2320fd507cb
 
-## Features
+## Run Locally
 
-- Secure authentication and Firestore access rules
-- JazzCash checkout with server-side HMAC hash generation
-- Automated order sync to Google Sheets
+**Prerequisites:**  Node.js
+
+
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`

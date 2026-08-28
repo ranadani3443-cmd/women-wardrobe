@@ -1,0 +1,6 @@
+{
+  "name": "Women's Wardrobe",
+  "description": "Women's Wardrobe is a luxury fashion e-commerce storefront with Google Picker Drive integration, live Google Sheets ledger synchronization, Cloud SQL/Firebase data persistence, and RBAC admin management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
