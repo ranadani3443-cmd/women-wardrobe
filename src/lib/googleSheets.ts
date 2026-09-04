@@ -1,5 +1,5 @@
 import { GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { auth } from './firebase.ts';
+import { getGoogleSheetsAuth } from './googleFirebaseAuth.ts';
 import { Product, AdminOrder, UserProfile, AuditLogEntry } from '../types.ts';
 
 const OAUTH_TOKEN_KEY = 'womens_wardrobe_google_sheets_token';
@@ -22,6 +22,35 @@ export interface SheetsExportResult {
   title: string;
   rowCount: number;
   message: string;
+}
+
+// Google Sheets limits a single cell to 50,000 characters. Product images and
+// payment screenshots can be stored by this app as base64/data URLs, which are
+// often hundreds of thousands of characters long. Never send those blobs to a
+// single Sheet cell. Keep normal web URLs, replace embedded data with a short
+// readable marker, and defensively trim any other unusually long value.
+const MAX_SHEETS_CELL_CHARS = 45000;
+const EMBEDDED_IMAGE_MARKER = '[Embedded image stored in website - not exported to Google Sheets]';
+
+function safeSheetCell(value: any): any {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+
+  const text = String(value);
+  if (text.startsWith('data:image/') || text.startsWith('data:application/')) {
+    return EMBEDDED_IMAGE_MARKER;
+  }
+  if (text.length > MAX_SHEETS_CELL_CHARS) {
+    return `${text.slice(0, MAX_SHEETS_CELL_CHARS)}… [trimmed for Google Sheets]`;
+  }
+  return text;
+}
+
+function safeImageReference(value: any): string {
+  if (!value) return '';
+  const text = String(value);
+  if (text.startsWith('data:')) return EMBEDDED_IMAGE_MARKER;
+  return safeSheetCell(text);
 }
 
 // ==================== AUTHENTICATION ====================
@@ -70,6 +99,7 @@ export async function connectGoogleSheets(): Promise<{ token: string; user: Goog
   provider.addScope('https://www.googleapis.com/auth/drive.file');
   provider.addScope('https://www.googleapis.com/auth/drive.metadata.readonly');
 
+  const auth = await getGoogleSheetsAuth();
   const result = await signInWithPopup(auth, provider);
   const credential = GoogleAuthProvider.credentialFromResult(result);
   const token = credential?.accessToken;
@@ -95,6 +125,7 @@ export async function disconnectGoogleSheets(): Promise<void> {
   localStorage.removeItem(OAUTH_TOKEN_KEY);
   localStorage.removeItem(GOOGLE_USER_KEY);
   try {
+    const auth = await getGoogleSheetsAuth();
     await signOut(auth);
   } catch (e) {
     console.warn('Sign out warning:', e);
@@ -302,9 +333,9 @@ export async function exportOrdersToGoogleSheets(
       order.paymentMethod,
       order.paymentStatus || 'Unpaid',
       order.status,
-      order.paymentScreenshot || 'None',
+      safeImageReference(order.paymentScreenshot) || 'None',
       order.userId || 'Guest',
-    ];
+    ].map(safeSheetCell);
   });
 
   // Write headers and rows
@@ -360,9 +391,9 @@ export async function appendOrderToGoogleSheets(
       order.paymentMethod,
       order.paymentStatus || 'Unpaid',
       order.status,
-      order.paymentScreenshot || 'None',
+      safeImageReference(order.paymentScreenshot) || 'None',
       order.userId || 'Guest',
-    ];
+    ].map(safeSheetCell);
 
     await requestSheetsApi(
       `/${spreadsheetId}/values/Orders!A:O:append?valueInputOption=USER_ENTERED`,
@@ -428,19 +459,19 @@ export async function exportProductsToGoogleSheets(
   ];
 
   const rows = products.map((p) => [
-    p.id,
-    p.name,
-    p.category,
+    safeSheetCell(p.id),
+    safeSheetCell(p.name),
+    safeSheetCell(p.category),
     p.price,
-    p.sizes.join(', '),
-    p.colors.map((c) => `${c.name} (${c.hex})`).join(', '),
+    safeSheetCell(p.sizes.join(', ')),
+    safeSheetCell(p.colors.map((c) => `${c.name} (${c.hex})`).join(', ')),
     p.rating,
     p.reviewsCount,
-    p.description,
-    (p.features || []).join('; '),
+    safeSheetCell(p.description),
+    safeSheetCell((p.features || []).join('; ')),
     p.isNewArrival ? 'YES' : 'NO',
     p.isBestSeller ? 'YES' : 'NO',
-    p.image,
+    safeImageReference(p.image),
   ]);
 
   await requestSheetsApi(
@@ -487,7 +518,7 @@ export async function exportCustomersToGoogleSheets(
     u.role,
     u.status,
     u.createdAt ? new Date(u.createdAt).toLocaleDateString() : 'N/A',
-  ]);
+  ].map(safeSheetCell));
 
   await requestSheetsApi(
     `/${created.spreadsheetId}/values/Customers!A1?valueInputOption=USER_ENTERED`,
@@ -531,7 +562,7 @@ export async function exportAuditLogsToGoogleSheets(
     l.description,
     l.ipAddress,
     l.status,
-  ]);
+  ].map(safeSheetCell));
 
   await requestSheetsApi(
     `/${created.spreadsheetId}/values/AuditLogs!A1?valueInputOption=USER_ENTERED`,
@@ -607,7 +638,10 @@ export async function importProductsFromGoogleSheets(
     const features = featuresStr ? featuresStr.split(';').map((f) => f.trim()) : ['High quality fabric', 'Tailored fit'];
     const isNewArrival = String(r[10]).toUpperCase() === 'YES' || String(r[10]).toUpperCase() === 'TRUE';
     const isBestSeller = String(r[11]).toUpperCase() === 'YES' || String(r[11]).toUpperCase() === 'TRUE';
-    const image = String(r[12] || 'https://images.unsplash.com/photo-1541099649105-f69ad21f3246?q=80&w=600&auto=format&fit=crop');
+    const rawImage = String(r[12] || '').trim();
+    const image = (!rawImage || rawImage === EMBEDDED_IMAGE_MARKER || rawImage.startsWith('data:'))
+      ? 'https://images.unsplash.com/photo-1541099649105-f69ad21f3246?q=80&w=600&auto=format&fit=crop'
+      : rawImage;
 
     importedProducts.push({
       id,
@@ -627,4 +661,35 @@ export async function importProductsFromGoogleSheets(
   }
 
   return importedProducts;
+}
+
+// ==================== CLEAR GOOGLE SHEET ====================
+
+export async function clearGoogleSpreadsheet(
+  spreadsheetIdOrUrl: string,
+  sheetName: string = 'Sheet1',
+  accessToken?: string
+): Promise<{ success: boolean; message: string }> {
+  let sheetId = spreadsheetIdOrUrl.trim();
+  const match = sheetId.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (match && match[1]) {
+    sheetId = match[1];
+  }
+
+  if (!sheetId) {
+    throw new Error('Please provide a valid Google Spreadsheet ID or URL.');
+  }
+
+  // Clear data range (preserving title/headers if desired or clearing all data)
+  await requestSheetsApi(
+    `/${sheetId}/values/${encodeURIComponent(sheetName)}!A2:Z1000:clear`,
+    'POST',
+    {},
+    accessToken
+  );
+
+  return {
+    success: true,
+    message: `Successfully cleared rows in Google Sheet "${sheetName}"!`,
+  };
 }

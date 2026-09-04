@@ -32,6 +32,7 @@ import {
   updateOrderPaymentStatusApi,
   fetchUsersApi,
   saveUserApi,
+  deleteUserApi,
   fetchPaymentMethodsApi,
   savePaymentMethodApi,
   deletePaymentMethodApi,
@@ -39,7 +40,6 @@ import {
   saveDeliveryConfigApi,
   fetchAuditLogsApi,
   addAuditLogApi,
-  seedInitialDataApi,
 } from './lib/api';
 import { onSnapshot, collection, doc } from 'firebase/firestore';
 import {
@@ -218,7 +218,7 @@ export default function App() {
 
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isWishlistOpen, setIsWishlistOpen] = useState(false);
-  const [isAdminOpen, setIsAdminOpen] = useState(false);
+  const isAdminRoute = typeof window !== 'undefined' && (window.location.pathname === '/admin' || window.location.pathname.startsWith('/admin/'));
   const [quickViewProduct, setQuickViewProduct] = useState<Product | null>(null);
   
   const [activeSection, setActiveSection] = useState('home');
@@ -237,144 +237,111 @@ export default function App() {
     }
   }, [currentUser]);
 
-  // Load database and seed initial data on mount, then listen in real-time
+  // Load the Hostinger/PostgreSQL API as the source of truth and subscribe to
+  // server-sent update events. This keeps every open storefront/admin tab in
+  // sync immediately after a catalog/order/settings change.
   useEffect(() => {
-    let unsubProducts: (() => void) | undefined;
-    let unsubOrders: (() => void) | undefined;
-    let unsubPaymentMethods: (() => void) | undefined;
-    let unsubDelivery: (() => void) | undefined;
-    let unsubNotifications: (() => void) | undefined;
-    let unsubUsers: (() => void) | undefined;
-    let unsubAuditLogs: (() => void) | undefined;
+    let disposed = false;
+    let events: EventSource | null = null;
+    let notificationUnsub: (() => void) | undefined;
 
-    async function initializeAndListen() {
+    const refreshProducts = async () => {
       try {
-        // Fast instant preload from internal API store
-        fetchProductsApi().then(list => { if (list && list.length > 0) setProducts(list); }).catch(() => {});
-        fetchOrdersApi().then(list => { if (list && list.length > 0) setOrders(list); }).catch(() => {});
-        fetchUsersApi().then(list => { if (list && list.length > 0) setUsers(list); }).catch(() => {});
-        fetchPaymentMethodsApi().then(list => { if (list && list.length > 0) setPaymentMethods(list); }).catch(() => {});
-        fetchDeliveryConfigApi().then(cfg => { if (cfg) setDeliveryFeeConfig(cfg); }).catch(() => {});
-        fetchAuditLogsApi().then(list => { if (list && list.length > 0) setAuditLogs(list); }).catch(() => {});
+        const list = await fetchProductsApi();
+        if (!disposed) setProducts(Array.isArray(list) ? list : []);
+      } catch {}
+    };
 
-        setIsLoading(false);
+    const refreshOrders = async () => {
+      try {
+        const list = await fetchOrdersApi();
+        if (!disposed) setOrders(Array.isArray(list) ? list : []);
+      } catch {}
+    };
 
-        // Run seed initial database setup in background
-        seedInitialData(
-          PRODUCTS,
-          defaultUsersList,
-          defaultPaymentMethodsList,
-          { isFree: false, amount: 250 },
-          defaultAuditLogsList
-        ).catch(() => {});
+    const refreshUsers = async () => {
+      try {
+        const list = await fetchUsersApi();
+        if (!disposed) setUsers(Array.isArray(list) ? list : []);
+      } catch {}
+    };
 
-        seedInitialDataApi({
-          products: PRODUCTS,
-          users: defaultUsersList,
-          paymentMethods: defaultPaymentMethodsList,
-          deliveryConfig: { isFree: false, amount: 250 },
-          auditLogs: defaultAuditLogsList,
-        }).catch(() => {});
+    const refreshPaymentMethods = async () => {
+      try {
+        const list = await fetchPaymentMethodsApi();
+        if (!disposed) setPaymentMethods(Array.isArray(list) ? list : []);
+      } catch {}
+    };
 
-        // Real-time listener: products
+    const refreshDelivery = async () => {
+      try {
+        const config = await fetchDeliveryConfigApi();
+        if (!disposed && config) setDeliveryFeeConfig(config);
+      } catch {}
+    };
+
+    const refreshAuditLogs = async () => {
+      try {
+        const list = await fetchAuditLogsApi();
+        if (!disposed) setAuditLogs(Array.isArray(list) ? list : []);
+      } catch {}
+    };
+
+    const refreshAll = async () => {
+      await Promise.allSettled([
+        refreshProducts(),
+        refreshOrders(),
+        refreshUsers(),
+        refreshPaymentMethods(),
+        refreshDelivery(),
+        refreshAuditLogs(),
+      ]);
+      if (!disposed) setIsLoading(false);
+    };
+
+    refreshAll();
+
+    // Keep Firebase notifications only as an optional notification transport;
+    // catalog/order/settings data no longer depends on Firestore snapshots.
+    try {
+      notificationUnsub = onSnapshot(collection(db, 'notifications'), (snapshot) => {
+        const list: any[] = [];
+        snapshot.forEach((docSnap) => list.push(docSnap.data()));
+        if (!disposed) setAdminNotifications(list);
+      }, () => {});
+    } catch {}
+
+    // Near-instant cross-browser refresh. The server broadcasts after each DB write.
+    try {
+      events = new EventSource('/api/events');
+      events.onmessage = (event) => {
         try {
-          unsubProducts = onSnapshot(collection(db, 'products'), (snapshot) => {
-            const list: Product[] = [];
-            snapshot.forEach((docSnap) => {
-              list.push(docSnap.data() as Product);
-            });
-            if (list.length > 0) setProducts(list);
-          }, () => {});
+          const message = JSON.parse(event.data || '{}');
+          switch (message.type) {
+            case 'products': refreshProducts(); break;
+            case 'orders': refreshOrders(); break;
+            case 'users': refreshUsers(); break;
+            case 'paymentMethods': refreshPaymentMethods(); break;
+            case 'deliveryConfig': refreshDelivery(); break;
+            case 'auditLogs': refreshAuditLogs(); break;
+            default: break;
+          }
         } catch {}
+      };
+    } catch {}
 
-        // Real-time listener: orders
-        try {
-          unsubOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
-            const list: AdminOrder[] = [];
-            snapshot.forEach((docSnap) => {
-              list.push(docSnap.data() as AdminOrder);
-            });
-            if (list.length > 0) {
-              list.sort((a, b) => {
-                const timeA = a.createdAt || Date.parse(a.date) || 0;
-                const timeB = b.createdAt || Date.parse(b.date) || 0;
-                return timeB - timeA;
-              });
-              setOrders(list);
-            }
-          }, () => {});
-        } catch {}
-
-        // Real-time listener: paymentMethods
-        try {
-          unsubPaymentMethods = onSnapshot(collection(db, 'paymentMethods'), (snapshot) => {
-            const list: PaymentMethod[] = [];
-            snapshot.forEach((docSnap) => {
-              list.push(docSnap.data() as PaymentMethod);
-            });
-            if (list.length > 0) setPaymentMethods(list);
-          }, () => {});
-        } catch {}
-
-        // Real-time listener: delivery config
-        try {
-          unsubDelivery = onSnapshot(doc(db, 'config', 'delivery'), (docSnap) => {
-            if (docSnap.exists()) {
-              setDeliveryFeeConfig(docSnap.data() as DeliveryFeeConfig);
-            }
-          }, () => {});
-        } catch {}
-
-        // Real-time listener: notifications
-        try {
-          unsubNotifications = onSnapshot(collection(db, 'notifications'), (snapshot) => {
-            const list: any[] = [];
-            snapshot.forEach((docSnap) => {
-              list.push(docSnap.data());
-            });
-            if (list.length > 0) setAdminNotifications(list);
-          }, () => {});
-        } catch {}
-
-        // Real-time listener: users
-        try {
-          unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
-            const list: UserProfile[] = [];
-            snapshot.forEach((docSnap) => {
-              list.push(docSnap.data() as UserProfile);
-            });
-            if (list.length > 0) setUsers(list);
-          }, () => {});
-        } catch {}
-
-        // Real-time listener: auditLogs
-        try {
-          unsubAuditLogs = onSnapshot(collection(db, 'auditLogs'), (snapshot) => {
-            const list: AuditLogEntry[] = [];
-            snapshot.forEach((docSnap) => {
-              list.push(docSnap.data() as AuditLogEntry);
-            });
-            if (list.length > 0) {
-              list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-              setAuditLogs(list);
-            }
-          }, () => {});
-        } catch {}
-      } catch (err) {
-        setIsLoading(false);
-      }
-    }
-
-    initializeAndListen();
+    // Safety refresh after returning to the tab, useful if a proxy briefly interrupted SSE.
+    const onFocus = () => refreshAll();
+    const onVisibility = () => { if (document.visibilityState === 'visible') refreshAll(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
-      if (unsubProducts) unsubProducts();
-      if (unsubOrders) unsubOrders();
-      if (unsubPaymentMethods) unsubPaymentMethods();
-      if (unsubDelivery) unsubDelivery();
-      if (unsubNotifications) unsubNotifications();
-      if (unsubUsers) unsubUsers();
-      if (unsubAuditLogs) unsubAuditLogs();
+      disposed = true;
+      events?.close();
+      notificationUnsub?.();
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
 
@@ -398,20 +365,22 @@ export default function App() {
       ipAddress: '192.168.' + Math.floor(Math.random() * 255) + '.' + Math.floor(1 + Math.random() * 254),
       status
     };
-    await addAuditLogToDB(newLog);
-    addAuditLogApi(newLog).catch(err => console.error('Cloud SQL addAuditLogApi error:', err));
     setAuditLogs(prev => [newLog, ...prev]);
+    await addAuditLogApi(newLog);
+    addAuditLogToDB(newLog).catch(() => {});
   };
 
   // SECURE AUTHENTICATION LOGIN HANDLER
   const handleUserLogin = async (email: string, pass: string): Promise<{ success: boolean; message: string }> => {
-    const foundUser = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPass = pass.trim();
+    const foundUser = users.find(u => u.email.trim().toLowerCase() === cleanEmail);
     
     if (!foundUser) {
       await addAuditLog(
         'Authentication Attempt',
         'Guest',
-        email,
+        cleanEmail,
         'Guest',
         `Failed authentication. User account identifier ${email} not found.`,
         'Failure'
@@ -443,7 +412,7 @@ export default function App() {
       return { success: false, message: 'Your account registration is in a pending state until administrative approval is granted.' };
     }
 
-    if (foundUser.passwordHash === pass) {
+    if (foundUser.passwordHash === cleanPass) {
       setCurrentUser(foundUser);
       await addAuditLog(
         'Authentication Attempt',
@@ -498,9 +467,9 @@ export default function App() {
       passwordHash: userData.passwordHash
     };
 
-    await saveUserToDB(newUser);
-    saveUserApi(newUser).catch(err => console.error('Cloud SQL saveUserApi error:', err));
     setUsers(prev => [...prev, newUser]);
+    await saveUserApi(newUser);
+    saveUserToDB(newUser).catch(() => {});
     
     await addAuditLog(
       'User Registration',
@@ -526,9 +495,9 @@ export default function App() {
       updatedAt: new Date().toISOString()
     };
 
-    await saveUserToDB(updatedUser);
-    saveUserApi(updatedUser).catch(err => console.error('Cloud SQL saveUserApi error:', err));
     setUsers(prev => prev.map(u => u.id === currentUser.id ? updatedUser : u));
+    await saveUserApi(updatedUser);
+    saveUserToDB(updatedUser).catch(() => {});
     setCurrentUser(updatedUser);
 
     await addAuditLog(
@@ -562,8 +531,9 @@ export default function App() {
     }
 
     const updatedUser = { ...currentUser, passwordHash: newPass, updatedAt: new Date().toISOString() };
-    await saveUserToDB(updatedUser);
     setUsers(prev => prev.map(u => u.id === currentUser.id ? updatedUser : u));
+    await saveUserApi(updatedUser);
+    saveUserToDB(updatedUser).catch(() => {});
     setCurrentUser(updatedUser);
 
     await addAuditLog(
@@ -600,9 +570,9 @@ export default function App() {
     if (!target) return;
 
     const updated = { ...target, status: 'Active' as const, updatedAt: new Date().toISOString() };
-    await saveUserToDB(updated);
-    saveUserApi(updated).catch(err => console.error('Cloud SQL saveUserApi error:', err));
     setUsers(prev => prev.map(u => u.id === userId ? updated : u));
+    await saveUserApi(updated);
+    saveUserToDB(updated).catch(() => {});
     
     await addAuditLog(
       'Account Status Update',
@@ -620,9 +590,9 @@ export default function App() {
     if (!target) return;
 
     const updated = { ...target, status: 'Suspended' as const, updatedAt: new Date().toISOString() };
-    await saveUserToDB(updated);
-    saveUserApi(updated).catch(err => console.error('Cloud SQL saveUserApi error:', err));
     setUsers(prev => prev.map(u => u.id === userId ? updated : u));
+    await saveUserApi(updated);
+    saveUserToDB(updated).catch(() => {});
     
     if (currentUser && currentUser.id === userId) {
       setCurrentUser(null);
@@ -644,9 +614,9 @@ export default function App() {
     if (!target) return;
 
     const updated = { ...target, status: 'Active' as const, updatedAt: new Date().toISOString() };
-    await saveUserToDB(updated);
-    saveUserApi(updated).catch(err => console.error('Cloud SQL saveUserApi error:', err));
     setUsers(prev => prev.map(u => u.id === userId ? updated : u));
+    await saveUserApi(updated);
+    saveUserToDB(updated).catch(() => {});
     
     await addAuditLog(
       'Account Status Update',
@@ -660,9 +630,9 @@ export default function App() {
 
   // SUPER ADMINISTRATOR: CREATE NEW ACCOUNT DIRECTLY
   const handleAddUser = async (user: UserProfile) => {
-    await saveUserToDB(user);
-    saveUserApi(user).catch(err => console.error('Cloud SQL saveUserApi error:', err));
     setUsers(prev => [...prev, user]);
+    await saveUserApi(user);
+    saveUserToDB(user).catch(() => {});
     await addAuditLog(
       'Administrative Action',
       user.id,
@@ -678,9 +648,9 @@ export default function App() {
     const old = users.find(u => u.id === updatedUser.id);
     if (!old) return;
 
-    await saveUserToDB(updatedUser);
-    saveUserApi(updatedUser).catch(err => console.error('Cloud SQL saveUserApi error:', err));
     setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
+    await saveUserApi(updatedUser);
+    saveUserToDB(updatedUser).catch(() => {});
     
     if (currentUser && currentUser.id === updatedUser.id) {
       setCurrentUser(updatedUser);
@@ -712,8 +682,9 @@ export default function App() {
     const target = users.find(u => u.id === userId);
     if (!target) return;
 
-    await deleteUserFromDB(userId);
     setUsers(prev => prev.filter(u => u.id !== userId));
+    await deleteUserApi(userId);
+    deleteUserFromDB(userId).catch(() => {});
     
     if (currentUser && currentUser.id === userId) {
       setCurrentUser(null);
@@ -741,9 +712,9 @@ export default function App() {
     }
 
     const updated = { ...target, passwordHash: tempPass, updatedAt: new Date().toISOString() };
-    await saveUserToDB(updated);
-    saveUserApi(updated).catch(err => console.error('Cloud SQL saveUserApi error:', err));
     setUsers(prev => prev.map(u => u.id === userId ? updated : u));
+    await saveUserApi(updated);
+    saveUserToDB(updated).catch(() => {});
 
     await addAuditLog(
       'Password Reset Request',
@@ -853,30 +824,35 @@ export default function App() {
 
   // Administrative Panel State Actions
   const handleAddProduct = async (newProd: Product) => {
-    await saveProductToDB(newProd);
-    saveProductApi(newProd).catch(err => console.error('Cloud SQL saveProductApi error:', err));
+    setProducts(prev => [newProd, ...prev.filter(p => p.id !== newProd.id)]);
+    await saveProductApi(newProd);
+    saveProductToDB(newProd).catch(() => {});
   };
 
   const handleUpdateProduct = async (updatedProd: Product) => {
-    await saveProductToDB(updatedProd);
-    saveProductApi(updatedProd).catch(err => console.error('Cloud SQL saveProductApi error:', err));
+    setProducts(prev => prev.map(p => p.id === updatedProd.id ? updatedProd : p));
+    await saveProductApi(updatedProd);
+    saveProductToDB(updatedProd).catch(() => {});
   };
 
   const handleDeleteProduct = async (id: string) => {
-    await deleteProductFromDB(id);
-    deleteProductApi(id).catch(err => console.error('Cloud SQL deleteProductApi error:', err));
+    setProducts(prev => prev.filter(p => p.id !== id));
+    await deleteProductApi(id);
+    deleteProductFromDB(id).catch(() => {});
   };
 
   const handleResetProducts = async () => {
+    setProducts(PRODUCTS);
     for (const p of PRODUCTS) {
-      await saveProductToDB(p);
-      saveProductApi(p).catch(err => console.error('Cloud SQL saveProductApi error:', err));
+      await saveProductApi(p);
+      saveProductToDB(p).catch(() => {});
     }
   };
 
   const handlePlaceOrder = async (newOrder: AdminOrder) => {
-    await saveOrderToDB(newOrder);
-    saveOrderApi(newOrder).catch(err => console.error('Cloud SQL saveOrderApi error:', err));
+    setOrders(prev => [newOrder, ...prev.filter(order => order.id !== newOrder.id)]);
+    await saveOrderApi(newOrder);
+    saveOrderToDB(newOrder).catch(() => {});
 
     // Push real-time administrative notification
     const newNotif = {
@@ -902,13 +878,15 @@ export default function App() {
   };
 
   const handleUpdateOrderStatus = async (orderId: string, status: AdminOrder['status']) => {
-    await updateOrderStatusInDB(orderId, status);
-    updateOrderStatusApi(orderId, status).catch(err => console.error('Cloud SQL updateOrderStatusApi error:', err));
+    setOrders(prev => prev.map(order => order.id === orderId ? { ...order, status } : order));
+    await updateOrderStatusApi(orderId, status);
+    updateOrderStatusInDB(orderId, status).catch(() => {});
   };
 
   const handleUpdateOrderPaymentStatus = async (orderId: string, paymentStatus: AdminOrder['paymentStatus']) => {
-    await updateOrderPaymentStatusInDB(orderId, paymentStatus);
-    updateOrderPaymentStatusApi(orderId, paymentStatus).catch(err => console.error('Cloud SQL updateOrderPaymentStatusApi error:', err));
+    setOrders(prev => prev.map(order => order.id === orderId ? { ...order, paymentStatus } : order));
+    await updateOrderPaymentStatusApi(orderId, paymentStatus);
+    updateOrderPaymentStatusInDB(orderId, paymentStatus).catch(() => {});
   };
 
   const handleClearNotifications = async () => {
@@ -925,23 +903,27 @@ export default function App() {
 
   // Dynamic Payment Admin Updates
   const handleAddPaymentMethod = async (pm: PaymentMethod) => {
-    await savePaymentMethodToDB(pm);
-    savePaymentMethodApi(pm).catch(err => console.error('Cloud SQL savePaymentMethodApi error:', err));
+    setPaymentMethods(prev => [pm, ...prev.filter(item => item.id !== pm.id)]);
+    await savePaymentMethodApi(pm);
+    savePaymentMethodToDB(pm).catch(() => {});
   };
 
   const handleUpdatePaymentMethod = async (pm: PaymentMethod) => {
-    await savePaymentMethodToDB(pm);
-    savePaymentMethodApi(pm).catch(err => console.error('Cloud SQL savePaymentMethodApi error:', err));
+    setPaymentMethods(prev => prev.map(item => item.id === pm.id ? pm : item));
+    await savePaymentMethodApi(pm);
+    savePaymentMethodToDB(pm).catch(() => {});
   };
 
   const handleDeletePaymentMethod = async (id: string) => {
-    await deletePaymentMethodFromDB(id);
-    deletePaymentMethodApi(id).catch(err => console.error('Cloud SQL deletePaymentMethodApi error:', err));
+    setPaymentMethods(prev => prev.filter(item => item.id !== id));
+    await deletePaymentMethodApi(id);
+    deletePaymentMethodFromDB(id).catch(() => {});
   };
 
   const handleUpdateDeliveryConfig = async (config: DeliveryFeeConfig) => {
-    await saveDeliveryFeeConfigToDB(config);
-    saveDeliveryConfigApi(config).catch(err => console.error('Cloud SQL saveDeliveryConfigApi error:', err));
+    setDeliveryFeeConfig(config);
+    await saveDeliveryConfigApi(config);
+    saveDeliveryFeeConfigToDB(config).catch(() => {});
   };
 
   const wishlistProducts = products.filter((p) => wishlistIds.includes(p.id));
@@ -999,7 +981,7 @@ export default function App() {
       </AnimatePresence>
 
       {/* Main Brand Experience */}
-      {!isLoading && (
+      {!isLoading && !isAdminRoute && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -1013,7 +995,6 @@ export default function App() {
             onOpenWishlist={() => setIsWishlistOpen(true)}
             onScrollToSection={handleScrollToSection}
             activeSection={activeSection}
-            onOpenAdmin={() => setIsAdminOpen(true)}
             onOpenUserPortal={() => setIsUserPortalOpen(true)}
           />
 
@@ -1055,7 +1036,6 @@ export default function App() {
           <Footer
             onScrollToSection={handleScrollToSection}
             onSelectCategory={handleSelectBentoCategory}
-            onOpenAdmin={() => setIsAdminOpen(true)}
           />
 
           {/* Shopping Drawer Side panel */}
@@ -1103,39 +1083,42 @@ export default function App() {
             orders={orders}
           />
 
-          {/* Executive Administrative Management Panel */}
-          <AdminPanel
-            isOpen={isAdminOpen}
-            onClose={() => setIsAdminOpen(false)}
-            products={products}
-            onAddProduct={handleAddProduct}
-            onUpdateProduct={handleUpdateProduct}
-            onDeleteProduct={handleDeleteProduct}
-            onResetProducts={handleResetProducts}
-            orders={orders}
-            onUpdateOrderStatus={handleUpdateOrderStatus}
-            onUpdateOrderPaymentStatus={handleUpdateOrderPaymentStatus}
-            paymentMethods={paymentMethods}
-            onAddPaymentMethod={handleAddPaymentMethod}
-            onUpdatePaymentMethod={handleUpdatePaymentMethod}
-            onDeletePaymentMethod={handleDeletePaymentMethod}
-            deliveryFeeConfig={deliveryFeeConfig}
-            onUpdateDeliveryConfig={handleUpdateDeliveryConfig}
-            adminNotifications={adminNotifications}
-            onClearNotifications={handleClearNotifications}
-            onMarkNotificationAsRead={handleMarkNotificationAsRead}
-            users={users}
-            auditLogs={auditLogs}
-            onApproveUser={handleApproveUser}
-            onSuspendUser={handleSuspendUser}
-            onReactivateUser={handleReactivateUser}
-            onAddUser={handleAddUser}
-            onUpdateUser={handleUpdateUser}
-            onDeleteUser={handleDeleteUser}
-            onInitiatePasswordReset={handleInitiatePasswordReset}
-          />
-
         </motion.div>
+      )}
+
+      {/* Dedicated administrative route: https://your-domain.com/admin */}
+      {!isLoading && isAdminRoute && (
+        <AdminPanel
+          isOpen={true}
+          fullPage={true}
+          onClose={() => { window.location.href = '/'; }}
+          products={products}
+          onAddProduct={handleAddProduct}
+          onUpdateProduct={handleUpdateProduct}
+          onDeleteProduct={handleDeleteProduct}
+          onResetProducts={handleResetProducts}
+          orders={orders}
+          onUpdateOrderStatus={handleUpdateOrderStatus}
+          onUpdateOrderPaymentStatus={handleUpdateOrderPaymentStatus}
+          paymentMethods={paymentMethods}
+          onAddPaymentMethod={handleAddPaymentMethod}
+          onUpdatePaymentMethod={handleUpdatePaymentMethod}
+          onDeletePaymentMethod={handleDeletePaymentMethod}
+          deliveryFeeConfig={deliveryFeeConfig}
+          onUpdateDeliveryConfig={handleUpdateDeliveryConfig}
+          adminNotifications={adminNotifications}
+          onClearNotifications={handleClearNotifications}
+          onMarkNotificationAsRead={handleMarkNotificationAsRead}
+          users={users}
+          auditLogs={auditLogs}
+          onApproveUser={handleApproveUser}
+          onSuspendUser={handleSuspendUser}
+          onReactivateUser={handleReactivateUser}
+          onAddUser={handleAddUser}
+          onUpdateUser={handleUpdateUser}
+          onDeleteUser={handleDeleteUser}
+          onInitiatePasswordReset={handleInitiatePasswordReset}
+        />
       )}
 
     </div>

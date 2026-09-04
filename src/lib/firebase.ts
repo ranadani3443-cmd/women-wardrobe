@@ -1,5 +1,5 @@
 import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, query, orderBy, limit } from 'firebase/firestore';
+import { initializeFirestore, getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, query, orderBy, limit } from 'firebase/firestore';
 import { getAuth, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { Product, AdminOrder, UserProfile, AuditLogEntry, PaymentMethod, DeliveryFeeConfig } from '../types';
 import appletConfig from '../../firebase-applet-config.json';
@@ -17,8 +17,16 @@ const firebaseConfig = {
 // Initialize Firebase
 const app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
 
-// Initialize Firestore
-export const db = getFirestore(app);
+// Initialize Firestore with reliable long-polling to prevent WebSocket connection timeouts
+export const db = (() => {
+  try {
+    return initializeFirestore(app, {
+      experimentalForceLongPolling: true,
+    });
+  } catch (e) {
+    return getFirestore(app);
+  }
+})();
 
 // Initialize Auth
 export const auth = getAuth(app);

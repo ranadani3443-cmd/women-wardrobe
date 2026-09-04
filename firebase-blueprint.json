@@ -1,0 +1,115 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Boutique catalog merchandise item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 200 },
+        "category": { "type": "string", "maxLength": 100 },
+        "price": { "type": "number" },
+        "image": { "type": "string", "maxLength": 2048 },
+        "description": { "type": "string", "maxLength": 5000 },
+        "rating": { "type": "number" },
+        "reviewsCount": { "type": "number" }
+      },
+      "required": ["id", "name", "category", "price", "image", "description"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer purchase transaction record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 50 },
+        "address": { "type": "string", "maxLength": 1000 },
+        "paymentMethod": { "type": "string", "maxLength": 100 },
+        "deliveryCharge": { "type": "number" },
+        "total": { "type": "number" },
+        "date": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["Pending", "Shipped", "Delivered", "Cancelled"] }
+      },
+      "required": ["id", "customerName", "phone", "address", "paymentMethod", "deliveryCharge", "total", "status"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with role-based access information",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "fullName": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 50 },
+        "address": { "type": "string", "maxLength": 1000 },
+        "role": { "type": "string", "enum": ["SuperAdmin", "StoreManager", "Customer"] },
+        "status": { "type": "string", "enum": ["PendingApproval", "Active", "Suspended"] }
+      },
+      "required": ["id", "email", "fullName", "role", "status"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "System security and administrative audit event",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string", "maxLength": 100 },
+        "eventType": { "type": "string", "maxLength": 100 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "userEmail": { "type": "string", "maxLength": 200 },
+        "role": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "status": { "type": "string", "enum": ["Success", "Failure", "Warning", "Info"] }
+      },
+      "required": ["id", "timestamp", "eventType", "userId", "userEmail", "status"]
+    },
+    "PaymentMethod": {
+      "title": "PaymentMethod",
+      "description": "Configured checkout payment option",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 200 },
+        "accountNumber": { "type": "string", "maxLength": 100 },
+        "accountTitle": { "type": "string", "maxLength": 200 },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["id", "name", "accountNumber", "isActive"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Public store inventory catalog"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Customer orders and fulfillment records"
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Protected user accounts and RBAC profiles"
+    },
+    "/auditLogs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Security log stream"
+    },
+    "/paymentMethods/{pmId}": {
+      "schema": "PaymentMethod",
+      "description": "Merchant payment accounts and gateways"
+    },
+    "/config/delivery": {
+      "schema": {
+        "$ref": "#/entities/PaymentMethod"
+      },
+      "description": "Store delivery fee configuration"
+    },
+    "/notifications/{notifId}": {
+      "schema": {
+        "$ref": "#/entities/AuditLog"
+      },
+      "description": "Admin real-time alerts"
+    }
+  }
+}

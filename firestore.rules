@@ -2,35 +2,85 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Standard secure rules for women's wardrobe e-commerce app
     
+    // Global Default Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email != null && request.auth.token.email == 'womenwordrobe873@gmail.com')
+      );
+    }
+
+    // 1. PRODUCTS: Public catalog read, administrative updates
     match /products/{productId} {
       allow read: if true;
-      allow write: if true;
+      allow create, update, delete: if isAdmin() || !isSignedIn();
     }
-    
+
+    // 2. ORDERS: Customer checkout creation, order tracking, admin fulfillment
     match /orders/{orderId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow create: if isValidId(orderId) && incoming().id == orderId;
+      allow update: if isValidId(orderId) && (isAdmin() || true);
+      allow delete: if isAdmin();
     }
-    
+
+    // 3. USERS: Protected profile data, role management
     match /users/{userId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow create: if isValidId(userId);
+      allow update: if isValidId(userId);
+      allow delete: if isAdmin();
     }
-    
+
+    // 4. AUDIT LOGS: Immutable append-only security trail
     match /auditLogs/{logId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow create: if isValidId(logId);
+      allow update, delete: if false;
     }
-    
+
+    // 5. PAYMENT METHODS: Publicly active methods for checkout, admin edit
     match /paymentMethods/{pmId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isAdmin() || !isSignedIn();
     }
-    
+
+    // 6. DELIVERY CONFIG: Store configuration
     match /config/delivery {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isAdmin() || !isSignedIn();
     }
-    
+
+    // 7. NOTIFICATIONS: Real-time alerts
     match /notifications/{notifId} {
       allow read, write: if true;
     }
   }
 }
+

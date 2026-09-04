@@ -106,8 +106,8 @@ export default function UserPortalModal({
 
     setIsLoading(true);
     try {
-      const sanitizedEmail = sanitizeInput(loginEmail);
-      const res = await onLogin(sanitizedEmail, loginPassword);
+      const sanitizedEmail = loginEmail.trim();
+      const res = await onLogin(sanitizedEmail, loginPassword.trim());
       if (res.success) {
         setSuccessMsg(res.message);
         // Clear forms

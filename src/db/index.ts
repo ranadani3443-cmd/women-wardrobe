@@ -5,22 +5,24 @@ import * as schema from './schema.ts';
 
 const { Pool } = pg;
 
-// Add global connection pool caching to persist across hot-reloads
 declare global {
   var _postgresPool: pg.Pool | undefined;
   var _schemaInitialized: boolean | undefined;
   var _sqlAvailable: boolean | undefined;
+  var _sqlLastFailureAt: number | undefined;
+  var _sqlLastErrorCode: string | undefined;
+  var _sqlLastErrorMessage: string | undefined;
+  var _sqlConfigSource: string | undefined;
 }
 
 function resolveSqlHost(): string | undefined {
-  const host = process.env.SQL_HOST;
+  const host = (process.env.SQL_HOST || process.env.PGHOST || '').trim();
   if (!host) return undefined;
-  
-  // If host is a UNIX socket path, verify that the directory or socket exists
+
   if (host.startsWith('/')) {
     try {
       if (!fs.existsSync(host)) {
-        console.info(`Cloud SQL socket path ${host} is not present in container. Using fallback data store.`);
+        console.warn(`[database] SQL socket path is unavailable: ${host}`);
         return undefined;
       }
     } catch {
@@ -30,63 +32,158 @@ function resolveSqlHost(): string | undefined {
   return host;
 }
 
-// Function to create or retrieve the connection pool.
+function isLocalHost(host?: string): boolean {
+  if (!host) return false;
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.startsWith('/');
+}
+
+function sslForHost(host?: string): false | { rejectUnauthorized: false } {
+  const explicit = String(process.env.SQL_SSL || process.env.PGSSLMODE || '').toLowerCase().trim();
+  if (['0', 'false', 'disable', 'disabled', 'off'].includes(explicit)) return false;
+  if (['1', 'true', 'require', 'required', 'on', 'prefer'].includes(explicit)) {
+    return { rejectUnauthorized: false };
+  }
+
+  // Supabase / remote PostgreSQL should use TLS. Local development can remain plain.
+  return isLocalHost(host) ? false : { rejectUnauthorized: false };
+}
+
+function setDbError(err: any) {
+  global._sqlAvailable = false;
+  global._sqlLastFailureAt = Date.now();
+  global._sqlLastErrorCode = String(err?.code || err?.name || 'DB_CONNECTION_ERROR');
+  global._sqlLastErrorMessage = String(err?.message || err || 'Unknown database error').slice(0, 300);
+
+  // Safe runtime diagnostic: no host/user/password values are printed.
+  console.error(`[database] connection failed (${global._sqlLastErrorCode}): ${global._sqlLastErrorMessage}`);
+}
+
+function clearDbError() {
+  global._sqlAvailable = true;
+  global._sqlLastFailureAt = undefined;
+  global._sqlLastErrorCode = undefined;
+  global._sqlLastErrorMessage = undefined;
+}
+
 export const createPool = () => {
   if (!global._postgresPool) {
+    const connectionString = (
+      process.env.DATABASE_URL ||
+      process.env.SUPABASE_DATABASE_URL ||
+      process.env.POSTGRES_URL ||
+      process.env.POSTGRES_URL_NON_POOLING ||
+      ''
+    ).trim();
+
     const validHost = resolveSqlHost();
-    
-    if (!validHost && !process.env.SQL_PORT) {
-      // No reachable SQL configuration detected
+    const hasHostingerSql = !!(
+      validHost ||
+      process.env.SQL_PORT ||
+      process.env.SQL_USER ||
+      process.env.SQL_PASSWORD ||
+      process.env.SQL_DB_NAME
+    );
+
+    // Prefer Hostinger's automatically managed SQL_* variables whenever they exist.
+    // This prevents an old/manual DATABASE_URL from overriding the Hostinger-Supabase integration.
+    if (hasHostingerSql) {
+      const sqlHost = validHost || '127.0.0.1';
+      const ssl = sslForHost(sqlHost);
+
+      global._sqlConfigSource = 'SQL_*';
+      global._postgresPool = new Pool({
+        host: sqlHost,
+        user: process.env.SQL_USER || process.env.SQL_ADMIN_USER || process.env.PGUSER || 'postgres',
+        password: process.env.SQL_PASSWORD || process.env.SQL_ADMIN_PASSWORD || process.env.PGPASSWORD || '',
+        database: process.env.SQL_DB_NAME || process.env.PGDATABASE || 'postgres',
+        port: process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : (process.env.PGPORT ? parseInt(process.env.PGPORT, 10) : 5432),
+        ssl: ssl || undefined,
+        max: 8,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000,
+        keepAlive: true,
+        application_name: 'women-wardrobe-hostinger',
+      });
+    } else if (connectionString) {
+      let parsedHost: string | undefined;
+      let useSsl: false | { rejectUnauthorized: false } = { rejectUnauthorized: false };
+      try {
+        const parsed = new URL(connectionString);
+        parsedHost = parsed.hostname;
+        const sslMode = String(parsed.searchParams.get('sslmode') || '').toLowerCase();
+        if (sslMode === 'disable' || isLocalHost(parsedHost)) useSsl = false;
+      } catch {
+        // Keep secure remote default when parsing fails.
+      }
+
+      global._sqlConfigSource = 'DATABASE_URL';
+      global._postgresPool = new Pool({
+        connectionString,
+        ssl: useSsl || undefined,
+        max: 8,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000,
+        keepAlive: true,
+        application_name: 'women-wardrobe-hostinger',
+      });
+    } else {
+      global._sqlConfigSource = 'none';
       global._sqlAvailable = false;
+      global._sqlLastErrorCode = 'DB_CONFIG_MISSING';
+      global._sqlLastErrorMessage = 'No PostgreSQL environment variables were detected.';
+
+      global._postgresPool = new Pool({
+        host: '127.0.0.1',
+        user: 'postgres',
+        password: '',
+        database: 'postgres',
+        port: 5432,
+        max: 1,
+        connectionTimeoutMillis: 1000,
+      });
     }
 
-    global._postgresPool = new Pool({
-      host: validHost || '127.0.0.1',
-      user: process.env.SQL_USER || process.env.SQL_ADMIN_USER || 'ai_studio_admin',
-      password: process.env.SQL_PASSWORD || process.env.SQL_ADMIN_PASSWORD || '',
-      database: process.env.SQL_DB_NAME || 'womens_wardrobe',
-      port: process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 5432,
-      max: 10,
-      connectionTimeoutMillis: 3000,
-    });
-
-    // Prevent unhandled pool-level errors from crashing the application
-    global._postgresPool.on('error', (err: Error) => {
-      global._sqlAvailable = false;
+    global._postgresPool.on('error', (err: Error & { code?: string }) => {
+      setDbError(err);
     });
   }
   return global._postgresPool;
 };
 
-// Create or retrieve the pool instance.
 export const pool = createPool();
-
-// Initialize Drizzle with the pool and schema.
 export const db = drizzle(pool, { schema });
 
-/**
- * Checks if the SQL connection is operational.
- */
+export function getSqlDiagnostics() {
+  return {
+    source: global._sqlConfigSource || 'unknown',
+    configured: global._sqlConfigSource !== 'none',
+    lastErrorCode: global._sqlLastErrorCode || null,
+  };
+}
+
 export async function isSqlConnected(): Promise<boolean> {
-  if (global._sqlAvailable === false) return false;
+  // Avoid hammering the same failed endpoint multiple times per second.
+  if (global._sqlAvailable === false && global._sqlLastFailureAt && Date.now() - global._sqlLastFailureAt < 3000) {
+    return false;
+  }
+
   try {
     const client = await pool.connect();
-    client.release();
-    global._sqlAvailable = true;
-    return true;
-  } catch {
-    global._sqlAvailable = false;
+    try {
+      await client.query('SELECT 1');
+      clearDbError();
+      return true;
+    } finally {
+      client.release();
+    }
+  } catch (err: any) {
+    setDbError(err);
     return false;
   }
 }
 
-/**
- * Ensures all required PostgreSQL tables and constraints exist.
- * This runs automatically on server start to guarantee zero missing table errors.
- */
 export async function ensureDbSchema(): Promise<void> {
   if (global._schemaInitialized) return;
-  if (global._sqlAvailable === false) return;
 
   try {
     const client = await pool.connect();
@@ -170,15 +267,35 @@ export async function ensureDbSchema(): Promise<void> {
           status TEXT NOT NULL DEFAULT 'Success',
           created_at TIMESTAMP DEFAULT NOW()
         );
+
+        -- Seed the original SuperAdmin only if that email does not already exist.
+        INSERT INTO users (
+          uid, email, full_name, phone, address, role, status, password_hash, created_at, updated_at
+        )
+        SELECT
+          'usr-1',
+          'womenwordrobe873@gmail.com',
+          'Adil Naseer',
+          '03422939080',
+          'Executive Suite Office 12, Gulberg III, Lahore',
+          'SuperAdmin',
+          'Active',
+          'Adilnaseer786.',
+          NOW(),
+          NOW()
+        WHERE NOT EXISTS (
+          SELECT 1 FROM users WHERE LOWER(email) = LOWER('womenwordrobe873@gmail.com')
+        );
       `);
+
       global._schemaInitialized = true;
-      global._sqlAvailable = true;
+      clearDbError();
+      console.info(`[database] PostgreSQL connected using ${global._sqlConfigSource || 'unknown'} configuration; schema is ready.`);
     } finally {
       client.release();
     }
   } catch (err: any) {
-    global._sqlAvailable = false;
+    setDbError(err);
+    throw err;
   }
 }
-
-

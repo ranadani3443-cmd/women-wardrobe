@@ -1,7 +1,7 @@
 import { AdminOrder } from '../types';
 
-export const WEB3FORMS_ACCESS_KEY = "18980451-9db4-4328-8d9e-786805829baf";
-export const OFFICIAL_BUSINESS_EMAIL = "womenwordrobe873@gmail.com";
+export const WEB3FORMS_ACCESS_KEY = import.meta.env.VITE_WEB3FORMS_ACCESS_KEY || "18980451-9db4-4328-8d9e-786805829baf";
+export const OFFICIAL_BUSINESS_EMAIL = import.meta.env.VITE_BUSINESS_EMAIL || "womenwordrobe873@gmail.com";
 
 export interface NotificationResult {
   web3formsSuccess: boolean;

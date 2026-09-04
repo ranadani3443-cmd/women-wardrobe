@@ -305,6 +305,20 @@ export async function upsertDbUser(user: UserProfile): Promise<void> {
   }
 }
 
+export async function deleteDbUser(id: string): Promise<void> {
+  memUsers.delete(id);
+
+  try {
+    const connected = await isSqlConnected();
+    if (!connected) return;
+
+    await ensureDbSchema();
+    await db.delete(users).where(eq(users.uid, id));
+  } catch (error) {
+    // Non-fatal fallback keeps the in-memory view consistent.
+  }
+}
+
 // ======================== PAYMENT METHODS ========================
 
 export async function getDbPaymentMethods(): Promise<PaymentMethod[]> {

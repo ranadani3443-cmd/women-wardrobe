@@ -2,10 +2,14 @@ import { Product, AdminOrder, UserProfile, PaymentMethod, DeliveryFeeConfig, Aud
 
 const API_BASE = '/api';
 
-export async function fetchProductsApi(): Promise<Product[]> {
-  const res = await fetch(`${API_BASE}/products`);
-  if (!res.ok) throw new Error('Failed to fetch products');
+async function apiGet<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`API request failed: ${path}`);
   return res.json();
+}
+
+export async function fetchProductsApi(): Promise<Product[]> {
+  return apiGet<Product[]>('/products');
 }
 
 export async function saveProductApi(product: Product): Promise<void> {
@@ -25,9 +29,7 @@ export async function deleteProductApi(id: string): Promise<void> {
 }
 
 export async function fetchOrdersApi(): Promise<AdminOrder[]> {
-  const res = await fetch(`${API_BASE}/orders`);
-  if (!res.ok) throw new Error('Failed to fetch orders');
-  return res.json();
+  return apiGet<AdminOrder[]>('/orders');
 }
 
 export async function saveOrderApi(order: AdminOrder): Promise<void> {
@@ -58,9 +60,7 @@ export async function updateOrderPaymentStatusApi(orderId: string, paymentStatus
 }
 
 export async function fetchUsersApi(): Promise<UserProfile[]> {
-  const res = await fetch(`${API_BASE}/users`);
-  if (!res.ok) throw new Error('Failed to fetch users');
-  return res.json();
+  return apiGet<UserProfile[]>('/users');
 }
 
 export async function saveUserApi(user: UserProfile): Promise<void> {
@@ -72,10 +72,15 @@ export async function saveUserApi(user: UserProfile): Promise<void> {
   if (!res.ok) throw new Error('Failed to save user');
 }
 
+export async function deleteUserApi(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/users/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('Failed to delete user');
+}
+
 export async function fetchPaymentMethodsApi(): Promise<PaymentMethod[]> {
-  const res = await fetch(`${API_BASE}/payment-methods`);
-  if (!res.ok) throw new Error('Failed to fetch payment methods');
-  return res.json();
+  return apiGet<PaymentMethod[]>('/payment-methods');
 }
 
 export async function savePaymentMethodApi(pm: PaymentMethod): Promise<void> {
@@ -95,9 +100,7 @@ export async function deletePaymentMethodApi(id: string): Promise<void> {
 }
 
 export async function fetchDeliveryConfigApi(): Promise<DeliveryFeeConfig> {
-  const res = await fetch(`${API_BASE}/delivery-config`);
-  if (!res.ok) throw new Error('Failed to fetch delivery config');
-  return res.json();
+  return apiGet<DeliveryFeeConfig>('/delivery-config');
 }
 
 export async function saveDeliveryConfigApi(config: DeliveryFeeConfig): Promise<void> {
@@ -110,9 +113,7 @@ export async function saveDeliveryConfigApi(config: DeliveryFeeConfig): Promise<
 }
 
 export async function fetchAuditLogsApi(): Promise<AuditLogEntry[]> {
-  const res = await fetch(`${API_BASE}/audit-logs`);
-  if (!res.ok) throw new Error('Failed to fetch audit logs');
-  return res.json();
+  return apiGet<AuditLogEntry[]>('/audit-logs');
 }
 
 export async function addAuditLogApi(log: AuditLogEntry): Promise<void> {
