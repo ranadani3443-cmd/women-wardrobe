@@ -25,6 +25,7 @@ import {
   exportCustomersToGoogleSheets,
   exportAuditLogsToGoogleSheets,
   importProductsFromGoogleSheets,
+  clearGoogleSpreadsheet,
   GoogleUserInfo,
   SheetsExportResult
 } from '../lib/googleSheets';
@@ -42,6 +43,7 @@ const FALLBACK_IMAGE = "https://images.unsplash.com/photo-1541099649105-f69ad21f
 interface AdminPanelProps {
   isOpen: boolean;
   onClose: () => void;
+  fullPage?: boolean;
   products: Product[];
   onAddProduct: (product: Product) => void;
   onUpdateProduct: (product: Product) => void;
@@ -193,6 +195,7 @@ function DragDropUpload({ onUpload, currentImage, label = "Drag & drop image her
 export default function AdminPanel({
   isOpen,
   onClose,
+  fullPage = false,
   products,
   onAddProduct,
   onUpdateProduct,
@@ -339,8 +342,13 @@ export default function AdminPanel({
 
   const handleLogin = (e: FormEvent) => {
     e.preventDefault();
-    const matchedUser = users.find(u => (u.role === 'SuperAdmin' || u.role === 'StoreManager') && u.passwordHash === passcode);
-    if (passcode === 'Adilnaseer786.' || passcode === 'admin' || matchedUser) {
+    const cleanPass = passcode.trim();
+    const matchedUser = users.find(
+      u => (u.role === 'SuperAdmin' || u.role === 'StoreManager') && 
+           u.status === 'Active' && 
+           u.passwordHash === cleanPass
+    );
+    if (matchedUser) {
       setIsAuthenticated(true);
       setPasscodeError(false);
       sessionStorage.setItem('ww_admin_authenticated', 'true');
@@ -466,6 +474,58 @@ export default function AdminPanel({
       setSheetsNotice({
         type: 'error',
         message: err.message || 'Failed to export audit logs to Google Sheets.',
+      });
+    } finally {
+      setIsExportingSheets(null);
+    }
+  };
+
+  const handleClearOrdersSheet = async () => {
+    if (!lastOrdersSheet) {
+      alert('No active Orders Google Sheet found to clear.');
+      return;
+    }
+    if (!window.confirm('Are you sure you want to clear all data rows from the Orders Google Sheet? (Headers will be preserved)')) {
+      return;
+    }
+    setIsExportingSheets('clear_orders');
+    setSheetsNotice(null);
+    try {
+      const res = await clearGoogleSpreadsheet(lastOrdersSheet, 'Orders');
+      setSheetsNotice({
+        type: 'success',
+        message: res.message || 'Orders sheet cleared successfully!',
+      });
+    } catch (err: any) {
+      setSheetsNotice({
+        type: 'error',
+        message: err.message || 'Failed to clear orders sheet.',
+      });
+    } finally {
+      setIsExportingSheets(null);
+    }
+  };
+
+  const handleClearProductsSheet = async () => {
+    if (!lastProductsSheet) {
+      alert('No active Catalog Google Sheet found to clear.');
+      return;
+    }
+    if (!window.confirm('Are you sure you want to clear all data rows from the Catalog Google Sheet? (Headers will be preserved)')) {
+      return;
+    }
+    setIsExportingSheets('clear_products');
+    setSheetsNotice(null);
+    try {
+      const res = await clearGoogleSpreadsheet(lastProductsSheet, 'Catalog');
+      setSheetsNotice({
+        type: 'success',
+        message: res.message || 'Product catalog sheet cleared successfully!',
+      });
+    } catch (err: any) {
+      setSheetsNotice({
+        type: 'error',
+        message: err.message || 'Failed to clear catalog sheet.',
       });
     } finally {
       setIsExportingSheets(null);
@@ -759,22 +819,30 @@ export default function AdminPanel({
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4">
-        {/* Backdrop overlay */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          onClick={onClose}
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm"
-        />
+      <div className={fullPage
+        ? "fixed inset-0 z-50 flex items-stretch justify-stretch bg-[#FAF6F0]"
+        : "fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4"
+      }>
+        {/* Backdrop overlay: only used by legacy modal mode */}
+        {!fullPage && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={onClose}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm"
+          />
+        )}
 
-        {/* Modal Window */}
+        {/* Full administrative workspace / legacy modal window */}
         <motion.div
-          initial={{ opacity: 0, scale: 0.95, y: 30 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.95, y: 30 }}
-          className="relative bg-[#FAF6F0] rounded-[24px] sm:rounded-[32px] w-full max-w-5xl max-h-[95vh] sm:max-h-[90vh] overflow-hidden z-10 shadow-2xl border border-white/20 flex flex-col"
+          initial={fullPage ? { opacity: 0 } : { opacity: 0, scale: 0.95, y: 30 }}
+          animate={fullPage ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+          exit={fullPage ? { opacity: 0 } : { opacity: 0, scale: 0.95, y: 30 }}
+          className={fullPage
+            ? "relative bg-[#FAF6F0] w-full h-full min-h-screen overflow-hidden z-10 flex flex-col"
+            : "relative bg-[#FAF6F0] rounded-[24px] sm:rounded-[32px] w-full max-w-5xl max-h-[95vh] sm:max-h-[90vh] overflow-hidden z-10 shadow-2xl border border-white/20 flex flex-col"
+          }
         >
           {/* Header */}
           <div className="px-4 sm:px-6 py-4 bg-[#8A4853] text-white flex items-center justify-between shrink-0">
@@ -859,7 +927,8 @@ export default function AdminPanel({
               <button
                 onClick={onClose}
                 className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors focus:outline-none"
-                aria-label="Close"
+                aria-label={fullPage ? "Return to storefront" : "Close"}
+                title={fullPage ? "Return to storefront" : "Close"}
               >
                 <X size={14} />
               </button>
@@ -3022,15 +3091,26 @@ export default function AdminPanel({
                             <span>{isExportingSheets === 'orders' ? 'Syncing...' : 'Export Orders Sheet'}</span>
                           </button>
                           {lastOrdersSheet && (
-                            <a
-                              href={`https://docs.google.com/spreadsheets/d/${lastOrdersSheet}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="bg-neutral-100 hover:bg-neutral-200 text-[#5A4A42] p-2 rounded-xl transition-colors"
-                              title="Open Last Orders Sheet"
-                            >
-                              <ExternalLink size={14} />
-                            </a>
+                            <>
+                              <button
+                                onClick={handleClearOrdersSheet}
+                                disabled={isExportingSheets === 'clear_orders'}
+                                className="bg-rose-50 hover:bg-rose-100 text-rose-700 py-2 px-2.5 rounded-xl font-sans text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center space-x-1 disabled:opacity-50"
+                                title="Clear Orders Sheet Rows"
+                              >
+                                <Trash2 size={12} />
+                                <span>{isExportingSheets === 'clear_orders' ? 'Clearing...' : 'Clear'}</span>
+                              </button>
+                              <a
+                                href={`https://docs.google.com/spreadsheets/d/${lastOrdersSheet}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="bg-neutral-100 hover:bg-neutral-200 text-[#5A4A42] p-2 rounded-xl transition-colors"
+                                title="Open Last Orders Sheet"
+                              >
+                                <ExternalLink size={14} />
+                              </a>
+                            </>
                           )}
                         </div>
                       </div>
@@ -3062,15 +3142,26 @@ export default function AdminPanel({
                             <span>{isExportingSheets === 'products' ? 'Syncing...' : 'Export Catalog Sheet'}</span>
                           </button>
                           {lastProductsSheet && (
-                            <a
-                              href={`https://docs.google.com/spreadsheets/d/${lastProductsSheet}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="bg-neutral-100 hover:bg-neutral-200 text-[#5A4A42] p-2 rounded-xl transition-colors"
-                              title="Open Last Products Sheet"
-                            >
-                              <ExternalLink size={14} />
-                            </a>
+                            <>
+                              <button
+                                onClick={handleClearProductsSheet}
+                                disabled={isExportingSheets === 'clear_products'}
+                                className="bg-rose-50 hover:bg-rose-100 text-rose-700 py-2 px-2.5 rounded-xl font-sans text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center space-x-1 disabled:opacity-50"
+                                title="Clear Catalog Sheet Rows"
+                              >
+                                <Trash2 size={12} />
+                                <span>{isExportingSheets === 'clear_products' ? 'Clearing...' : 'Clear'}</span>
+                              </button>
+                              <a
+                                href={`https://docs.google.com/spreadsheets/d/${lastProductsSheet}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="bg-neutral-100 hover:bg-neutral-200 text-[#5A4A42] p-2 rounded-xl transition-colors"
+                                title="Open Last Products Sheet"
+                              >
+                                <ExternalLink size={14} />
+                              </a>
+                            </>
                           )}
                         </div>
                       </div>

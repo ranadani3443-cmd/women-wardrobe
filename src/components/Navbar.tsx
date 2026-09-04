@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Heart, ShoppingBag, User, Menu, X, Lock } from 'lucide-react';
+import { Search, Heart, ShoppingBag, User, Menu, X } from 'lucide-react';
 import { BRAND_LOGO } from '../data';
 
 interface NavbarProps {
@@ -9,7 +9,6 @@ interface NavbarProps {
   onOpenWishlist: () => void;
   onScrollToSection: (sectionId: string) => void;
   activeSection: string;
-  onOpenAdmin: () => void;
   onOpenUserPortal: () => void;
 }
 
@@ -20,7 +19,6 @@ export default function Navbar({
   onOpenWishlist,
   onScrollToSection,
   activeSection,
-  onOpenAdmin,
   onOpenUserPortal
 }: NavbarProps) {
   const [isScrolled, setIsScrolled] = useState(false);
@@ -60,10 +58,9 @@ export default function Navbar({
           {/* Logo */}
           <button
             onClick={() => onScrollToSection('home')}
-            onDoubleClick={onOpenAdmin}
             className="flex items-center space-x-2 text-left group focus:outline-none"
             id="logo-button"
-            title="Women's Wardrobe - Double-click logo for Admin Portal"
+            title="Women's Wardrobe"
           >
             <div className="w-10 h-10 rounded-full border border-[#8A4853]/20 overflow-hidden flex items-center justify-center bg-white shadow-sm group-hover:scale-105 transition-transform duration-300">
               <img
@@ -184,21 +181,7 @@ export default function Navbar({
             >
               <User size={18} />
             </button>
-
-            {/* Admin Panel Trigger */}
-            <button
-              onClick={onOpenAdmin}
-              className="text-[#5A4A42] hover:text-[#8A4853] transition-colors duration-300 p-2 focus:outline-none rounded-full hover:bg-[#FAF6F0] flex items-center space-x-1.5 border border-[#8A4853]/10 px-3 bg-[#8A4853]/5 font-semibold"
-              title="Admin Panel Portal"
-              id="admin-panel-btn"
-            >
-              <Lock size={12} className="text-[#8A4853]" />
-              <span className="text-[9px] uppercase font-bold tracking-wider">Admin</span>
-            </button>
-
-
-
-            {/* Mobile Menu Toggle */}
+{/* Mobile Menu Toggle */}
             <button
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
               className="lg:hidden text-[#5A4A42] hover:text-[#8A4853] transition-colors duration-300 p-2 focus:outline-none"
@@ -256,20 +239,7 @@ export default function Navbar({
                 <User size={12} />
                 <span>My Account</span>
               </button>
-
-              {/* Admin Mobile Trigger */}
-              <button
-                onClick={() => {
-                  onOpenAdmin();
-                  setIsMobileMenuOpen(false);
-                }}
-                className="w-full flex items-center justify-center space-x-2 bg-[#8A4853]/10 border border-[#8A4853]/20 text-[#8A4853] py-2.5 rounded-xl font-sans text-[11px] tracking-wider font-bold uppercase transition-all duration-300 mb-4"
-              >
-                <Lock size={12} />
-                <span>Admin Portal</span>
-              </button>
-
-              <div className="flex items-center space-x-3 mb-6">
+<div className="flex items-center space-x-3 mb-6">
                 <div className="w-10 h-10 rounded-full border border-[#8A4853]/20 overflow-hidden bg-white flex items-center justify-center">
                   <img
                     src={BRAND_LOGO}

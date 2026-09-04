@@ -12,6 +12,7 @@ import {
   updateDbOrderPaymentStatus,
   getDbUsers,
   upsertDbUser,
+  deleteDbUser,
   getDbPaymentMethods,
   upsertDbPaymentMethod,
   deleteDbPaymentMethod,
@@ -20,9 +21,9 @@ import {
   getDbAuditLogs,
   insertDbAuditLog,
 } from './src/db/queries.ts';
-import { ensureDbSchema } from './src/db/index.ts';
+import { ensureDbSchema, isSqlConnected, getSqlDiagnostics } from './src/db/index.ts';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 async function startServer() {
   // Ensure tables and schema exist in PostgreSQL
@@ -31,13 +32,135 @@ async function startServer() {
   });
 
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   app.use(express.json({ limit: '15mb' }));
 
-  // Health check
-  app.get('/api/health', (_req: Request, res: Response) => {
-    res.json({ status: 'ok', database: 'cloudsql-postgresql', timestamp: new Date().toISOString() });
+  // Never cache dynamic API data. This avoids Hostinger/CDN/browser stale catalog responses.
+  app.use('/api', (_req: Request, res: Response, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    next();
+  });
+
+  // Lightweight server-sent events channel so all open storefront/admin tabs
+  // refresh immediately after database mutations.
+  const realtimeClients = new Set<Response>();
+  const broadcastUpdate = (type: string) => {
+    const payload = `data: ${JSON.stringify({ type, timestamp: Date.now() })}\n\n`;
+    for (const client of realtimeClients) {
+      try { client.write(payload); } catch { realtimeClients.delete(client); }
+    }
+  };
+
+  app.get('/api/events', (req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+    realtimeClients.add(res);
+    res.write(`data: ${JSON.stringify({ type: 'connected', timestamp: Date.now() })}\n\n`);
+
+    const heartbeat = setInterval(() => {
+      try { res.write(': heartbeat\n\n'); } catch {}
+    }, 25000);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      realtimeClients.delete(res);
+    });
+  });
+
+  // Dedicated Firebase configuration for Google Sheets OAuth.
+  // This intentionally does NOT use the old AI-Studio Firebase project bundled in the original app.
+  // It targets the user's own Firebase project: womenwardrobe-71b06.
+  let cachedGoogleFirebaseConfig: any | null = null;
+
+  async function resolveGoogleFirebaseConfig() {
+    if (cachedGoogleFirebaseConfig?.apiKey) return cachedGoogleFirebaseConfig;
+
+    const projectId = process.env.FIREBASE_PROJECT_ID || 'womenwardrobe-71b06';
+    const authDomain = process.env.FIREBASE_AUTH_DOMAIN || `${projectId}.firebaseapp.com`;
+    const envApiKey = process.env.FIREBASE_WEB_API_KEY || process.env.GOOGLE_FIREBASE_API_KEY || '';
+
+    if (envApiKey) {
+      cachedGoogleFirebaseConfig = {
+        apiKey: envApiKey,
+        authDomain,
+        projectId,
+        storageBucket: process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.firebasestorage.app`,
+        messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || undefined,
+        appId: process.env.FIREBASE_APP_ID || undefined,
+        configured: true,
+        source: 'hostinger-environment',
+      };
+      return cachedGoogleFirebaseConfig;
+    }
+
+    // Firebase Hosting exposes the web config publicly at this reserved endpoint.
+    // Try both default Firebase hosting domains automatically so most deployments need no extra key entry.
+    const configUrls = [
+      `https://${projectId}.firebaseapp.com/__/firebase/init.json`,
+      `https://${projectId}.web.app/__/firebase/init.json`,
+    ];
+
+    for (const url of configUrls) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 6500);
+        const response = await fetch(url, { signal: controller.signal });
+        clearTimeout(timer);
+        if (!response.ok) continue;
+        const remote = await response.json() as any;
+        if (remote?.apiKey) {
+          cachedGoogleFirebaseConfig = {
+            apiKey: remote.apiKey,
+            authDomain: remote.authDomain || authDomain,
+            projectId: remote.projectId || projectId,
+            storageBucket: remote.storageBucket,
+            messagingSenderId: remote.messagingSenderId,
+            appId: remote.appId,
+            configured: true,
+            source: 'firebase-hosting-init',
+          };
+          return cachedGoogleFirebaseConfig;
+        }
+      } catch {
+        // Try the next source.
+      }
+    }
+
+    return {
+      apiKey: '',
+      authDomain,
+      projectId,
+      configured: false,
+      source: 'missing-api-key',
+      message: 'Firebase project womenwardrobe-71b06 is selected, but its Web API Key could not be discovered automatically. Add FIREBASE_WEB_API_KEY in Hostinger Environment variables, then redeploy.',
+    };
+  }
+
+  app.get('/api/google-auth-config', async (_req: Request, res: Response) => {
+    const config = await resolveGoogleFirebaseConfig();
+    if (!config.apiKey) {
+      return res.status(503).json(config);
+    }
+    res.json(config);
+  });
+
+  // Health check reports the actual PostgreSQL/Supabase connection state.
+  app.get('/api/health', async (_req: Request, res: Response) => {
+    const connected = await isSqlConnected();
+    const diagnostics = getSqlDiagnostics();
+    res.json({
+      status: 'ok',
+      database: connected ? 'postgresql-connected' : 'database-fallback',
+      databaseConfig: diagnostics.source,
+      databaseErrorCode: connected ? null : diagnostics.lastErrorCode,
+      timestamp: new Date().toISOString()
+    });
   });
 
   // ==================== PRODUCTS ====================
@@ -58,6 +181,7 @@ async function startServer() {
         return res.status(400).json({ error: 'Invalid product data' });
       }
       await upsertDbProduct(product);
+      broadcastUpdate('products');
       res.json({ success: true, product });
     } catch (error: any) {
       console.error('Error saving product:', error);
@@ -69,6 +193,7 @@ async function startServer() {
     try {
       const { id } = req.params;
       await deleteDbProduct(id);
+      broadcastUpdate('products');
       res.json({ success: true, deletedId: id });
     } catch (error: any) {
       console.error('Error deleting product:', error);
@@ -94,6 +219,7 @@ async function startServer() {
         return res.status(400).json({ error: 'Invalid order data' });
       }
       await insertDbOrder(order);
+      broadcastUpdate('orders');
       res.json({ success: true, order });
     } catch (error: any) {
       console.error('Error creating order:', error);
@@ -109,6 +235,7 @@ async function startServer() {
         return res.status(400).json({ error: 'Status is required' });
       }
       await updateDbOrderStatus(id, status);
+      broadcastUpdate('orders');
       res.json({ success: true, id, status });
     } catch (error: any) {
       console.error('Error updating order status:', error);
@@ -124,6 +251,7 @@ async function startServer() {
         return res.status(400).json({ error: 'Payment status is required' });
       }
       await updateDbOrderPaymentStatus(id, paymentStatus);
+      broadcastUpdate('orders');
       res.json({ success: true, id, paymentStatus });
     } catch (error: any) {
       console.error('Error updating payment status:', error);
@@ -149,10 +277,23 @@ async function startServer() {
         return res.status(400).json({ error: 'Invalid user data' });
       }
       await upsertDbUser(user);
+      broadcastUpdate('users');
       res.json({ success: true, user });
     } catch (error: any) {
       console.error('Error saving user:', error);
       res.status(500).json({ error: error.message || 'Failed to save user' });
+    }
+  });
+
+  app.delete('/api/users/:id', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      await deleteDbUser(id);
+      broadcastUpdate('users');
+      res.json({ success: true, deletedId: id });
+    } catch (error: any) {
+      console.error('Error deleting user:', error);
+      res.status(500).json({ error: error.message || 'Failed to delete user' });
     }
   });
 
@@ -174,6 +315,7 @@ async function startServer() {
         return res.status(400).json({ error: 'Invalid payment method data' });
       }
       await upsertDbPaymentMethod(pm);
+      broadcastUpdate('paymentMethods');
       res.json({ success: true, paymentMethod: pm });
     } catch (error: any) {
       console.error('Error saving payment method:', error);
@@ -185,6 +327,7 @@ async function startServer() {
     try {
       const { id } = req.params;
       await deleteDbPaymentMethod(id);
+      broadcastUpdate('paymentMethods');
       res.json({ success: true, deletedId: id });
     } catch (error: any) {
       console.error('Error deleting payment method:', error);
@@ -207,6 +350,7 @@ async function startServer() {
     try {
       const config = req.body;
       await saveDbDeliveryConfig(config);
+      broadcastUpdate('deliveryConfig');
       res.json({ success: true, config });
     } catch (error: any) {
       console.error('Error saving delivery config:', error);
@@ -232,6 +376,7 @@ async function startServer() {
         return res.status(400).json({ error: 'Invalid audit log data' });
       }
       await insertDbAuditLog(log);
+      broadcastUpdate('auditLogs');
       res.json({ success: true, log });
     } catch (error: any) {
       console.error('Error saving audit log:', error);

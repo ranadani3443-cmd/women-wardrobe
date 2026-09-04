@@ -1,0 +1,79 @@
+WOMEN'S WARDROBE — HOSTINGER REDEPLOY
+
+Admin page
+----------
+Public storefront: https://womenwardrobe.store/
+Separate admin page: https://womenwardrobe.store/admin
+The public navbar/footer no longer contains an Admin button or hidden double-click admin trigger.
+
+Hostinger Node.js settings
+--------------------------
+Node version: 22.x
+Build command: npm run build
+Start command: npm run start
+Root directory: ./
+
+Database
+--------
+The app now reads Hostinger/Supabase PostgreSQL from DATABASE_URL first.
+It also supports SUPABASE_DATABASE_URL, POSTGRES_URL, and POSTGRES_URL_NON_POOLING.
+Keep your existing Hostinger Supabase integration/environment variables connected when redeploying.
+
+After deploy, verify:
+1. Open https://womenwardrobe.store/api/health
+2. Confirm database says: postgresql-connected
+3. Open https://womenwardrobe.store/admin
+4. Log in and add/edit one product.
+5. Open the storefront in another browser/private tab. The product change should appear automatically without manual refresh.
+
+Realtime changes
+----------------
+The app now uses /api/events (Server-Sent Events) plus no-cache API headers.
+Product/order/payment/delivery/user/audit changes broadcast to open browser tabs immediately.
+
+V3 DATABASE FIX
+---------------
+This build fixes Supabase/Hostinger SQL_* connections by enabling TLS for remote PostgreSQL hosts.
+It also logs safe database error codes in Runtime Logs and exposes databaseConfig/databaseErrorCode
+at /api/health without exposing credentials.
+
+Do NOT add DATABASE_URL if Hostinger has already created SQL_HOST, SQL_PORT, SQL_USER,
+SQL_PASSWORD, and SQL_DB_NAME. Keep the Hostinger-provided SQL_* variables.
+
+After deployment, open /api/health. Expected:
+  database: "postgresql-connected"
+  databaseConfig: "SQL_*"
+  databaseErrorCode: null
+
+On first successful connection, the application creates the required public tables and seeds the
+original SuperAdmin account if it does not already exist.
+
+GOOGLE SHEETS AUTH FIX (v4)
+---------------------------
+This build no longer uses gen-lang-client-0538388568 for Google Sheets login.
+It uses your Firebase project: womenwardrobe-71b06.
+
+Before testing, confirm in Firebase:
+- Authentication > Sign-in method > Google = Enabled
+- Authentication > Settings > Authorized domains contains:
+  womenwardrobe.store
+  www.womenwardrobe.store
+
+v4 first tries to discover the public Firebase web config automatically.
+After deployment, open:
+  https://womenwardrobe.store/api/google-auth-config
+
+If it returns "configured": true, no additional Firebase environment variable is needed.
+If it returns "configured": false, go to Firebase > Project settings > General > Your apps > Web app
+and copy the Web API Key, then in Hostinger Environment variables add:
+  Key: FIREBASE_WEB_API_KEY
+  Value: <your Firebase Web API Key>
+Then redeploy/restart.
+
+Do not use the old gen-lang-client Firebase project for Google Sheets authentication.
+
+V5 GOOGLE SHEETS CELL-LIMIT FIX
+- Google Sheets has a 50,000-character maximum per cell.
+- Embedded/base64 product images and payment screenshots are now omitted from spreadsheet cells and replaced by a readable marker.
+- Normal https:// image URLs are still exported unchanged.
+- Other unusually long text values are safely trimmed below the Sheets limit.

@@ -1,6 +1,6 @@
 import { AdminOrder } from '../types';
 
-export const DEFAULT_MERCHANT_WHATSAPP = '923422939080';
+export const DEFAULT_MERCHANT_WHATSAPP = import.meta.env.VITE_MERCHANT_WHATSAPP || '923422939080';
 export const WHATSAPP_STORAGE_KEY = 'ww_merchant_whatsapp';
 
 /**

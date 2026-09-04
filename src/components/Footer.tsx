@@ -1,13 +1,12 @@
 import { BRAND_LOGO } from '../data';
-import { Mail, Phone, MapPin, Sparkles, Heart, Instagram, Facebook, Lock } from 'lucide-react';
+import { Mail, Phone, MapPin, Sparkles, Heart, Instagram, Facebook } from 'lucide-react';
 
 interface FooterProps {
   onScrollToSection: (sectionId: string) => void;
   onSelectCategory: (category: string) => void;
-  onOpenAdmin?: () => void;
 }
 
-export default function Footer({ onScrollToSection, onSelectCategory, onOpenAdmin }: FooterProps) {
+export default function Footer({ onScrollToSection, onSelectCategory }: FooterProps) {
   return (
     <footer className="bg-[#FAF6F0] pt-24 pb-12 border-t border-[#F5EFEB]">
       <div className="max-w-7xl mx-auto px-6 lg:px-12">
@@ -165,16 +164,6 @@ export default function Footer({ onScrollToSection, onSelectCategory, onOpenAdmi
         <div className="border-t border-[#FAF6F0] pt-8 flex flex-col sm:flex-row justify-between items-center text-center gap-4">
           <p className="font-sans text-xs text-[#A38F85] flex items-center justify-center gap-1">
             <span>© 2026 Women's Wardrobe. All Rights Reserved. Crafted with love &amp; premium precision.</span>
-            {onOpenAdmin && (
-              <button
-                onClick={onOpenAdmin}
-                className="text-[#A38F85]/40 hover:text-[#8A4853] transition-colors p-1 rounded focus:outline-none"
-                title="Executive Suite Portal"
-                id="footer-admin-btn"
-              >
-                <Lock size={10} />
-              </button>
-            )}
           </p>
           <div className="flex space-x-6 text-xs text-[#A38F85] font-medium">
             <button className="hover:text-[#8A4853] transition-colors focus:outline-none">Privacy Policy</button>
